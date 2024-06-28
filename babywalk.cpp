@@ -418,7 +418,7 @@ static bool propagate() {
         found_empty_clause = true;
         return false;
       }
-      root_level_assign (unit, c);
+      root_level_assign(unit, c);
     NEXT_CLAUSE:;
     }
   }
@@ -560,7 +560,7 @@ static void parse() {
         } else if (size == 1) {
           int unit = c->literals[0];
           LOG(simplified, "found unit %s", LOG(unit));
-          root_level_assign (unit, c);
+          root_level_assign(unit, c);
           if (!propagate()) {
             verbose("root-level propagation yields conflict");
             assert(found_empty_clause);
@@ -622,21 +622,22 @@ static void simplify() {
 
 // Function for random number generation.
 
-static unsigned next_random() {
+static uint64_t next64() {
   generator *= 6364136223846793005ul;
   generator += 1442695040888963407ul;
   assert(generator);
   return generator;
 }
 
-static bool next_bool() { return next_random() < 2147483648u; }
+static unsigned next32() { return next64() >> 32; }
+
+static bool next_bool() { return next32() < 2147483648u; }
 
 // Restart by generating new assignment.
 
 static void restart() {
   LOG("restarting");
   stats.restarts++;
-  unsatisfied.clear();
   for (int64_t idx = 1; idx <= variables; idx++) {
     if (forced[idx])
       continue;
@@ -645,6 +646,7 @@ static void restart() {
     values[-idx] = -value;
     LOG("assign %" PRId64 " in restart", value < 0 ? -idx : idx);
   }
+  unsatisfied.clear();
 }
 
 // Flip falsified literal.
@@ -658,7 +660,32 @@ static void flip(int lit) {
   stats.flipped++;
 }
 
-static void walksat() { restart(); }
+static clause *pick_unsatisfied_clause() {
+  return unsatisfied[next64() % unsatisfied.size()];
+}
+
+static int pick_literal_in_unsatisfied_clause(clause *c) {
+  return c->literals[next64() % c->size];
+}
+
+static void make_clauses (int lit) {
+  assert (values[lit] > 0);
+}
+
+static void break_clauses (int lit) {
+  assert (values[lit] < 0);
+}
+
+static void walksat() {
+  restart();
+  while (!unsatisfied.empty()) {
+    auto c = pick_unsatisfied_clause();
+    auto lit = pick_literal_in_unsatisfied_clause(c);
+    flip(lit);
+    make_clauses(lit);
+    break_clauses(-lit);
+  }
+}
 
 static void print_values() {
   size_t printed = 0;
@@ -692,7 +719,7 @@ static int solve() {
   }
   if (thank) {
     for (auto p = thank; *p; p++)
-      generator ^= *p, (void)next_random();
+      generator ^= *p, (void)next64();
     verbose("hashed '%s' to seed '%" PRIu64, thank, generator);
   }
   walksat();
@@ -751,6 +778,12 @@ static void options(int argc, char **argv) {
 
 static void banner() { message("BabyWalk Local Search SAT Solver"); }
 
+static void goodbye (int res) {
+  if (thank)
+    message("thanks to '%s'", thank);
+  message("exit %d", res);
+}
+
 int main(int argc, char **argv) {
   options(argc, argv);
   banner();
@@ -759,8 +792,6 @@ int main(int argc, char **argv) {
   int res = solve();
   report();
   reset();
-  if (thank)
-    message("thanks to '%s'", thank);
-  message("exit %d", res);
+  goodbye(res);
   return res;
 }
