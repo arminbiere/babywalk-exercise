@@ -1,0 +1,17 @@
+CXX=@CXX@
+CXXFLAGS=@CXXFLAGS@
+all: babywalk checkmodel
+babywalk: babywalk.cpp makefile
+	$(CXX) $(CXXFLAGS) -o $@ $<
+checkmodel: checkmodel.cpp makefile
+	$(CXX) $(CXXFLAGS) -o $@ $<
+format:
+	clang-format -i *.cpp
+clean:
+	rm -f babywalk checkmodel makefile
+	rm -f test/*.log test/*.err test/*.out test/*.chm
+test: all
+	./test/run.sh
+fixpoint: all
+	./test/fixpoint.sh
+.PHONY: all clean format test

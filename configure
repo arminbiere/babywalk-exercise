@@ -1,0 +1,57 @@
+#!/bin/sh
+usage () {
+cat <<EOF
+usage: configure [ <option> ... ]
+
+where '<option>' is one of the following
+
+-h | --help     print this command line option summary
+-c | --check    compile with assertion checking (default for '-g')
+-g | --debug    compile for debugging (implies '-s', '-l', '-c')
+-l | --logging  compile with logging code (default for '-g')
+-s | --symbols  compile symbol table (default for '-g')
+-a | --asan     use address sanitizer
+
+The default build configuration is to compile optimized
+code without any debugging, logging nor assertion checking support.
+EOF
+}
+die () {
+  echo "configure: error: $*" 1>&2
+  exit 1
+}
+msg () {
+  echo "[configure] $*"
+}
+debug=no
+symbols=unknown
+check=unknown
+logging=unknown
+asan=no
+while [ $# -gt 0 ]
+do
+  case "$1" in
+    -h|--help) usage; exit 0;;
+    -c|--check) check=yes;;
+    -g|--debug) debug=yes;;
+    -a|--asan) asan=yes;;
+    -l|--logging) logging=yes;;
+    -s|--symbols) symbols=yes;;
+    *) die "invalid option '$1' (try '-h')";;
+  esac
+  shift
+done
+CXX=g++
+CXXFLAGS="-Wall"
+[ $check = unknown ] && check=$debug
+[ $logging = unknown ] && logging=$debug
+[ $symbols = unknown ] && symbols=$debug
+[ $symbols = yes ] && CXXFLAGS="$CXXFLAGS -ggdb3"
+[ $debug = no ] && CXXFLAGS="$CXXFLAGS -O3"
+[ $asan = yes ] && CXXFLAGS="$CXXFLAGS -fsanitize=address"
+[ $logging = yes ] && CXXFLAGS="$CXXFLAGS -DLOGGING"
+[ $check = no ] && CXXFLAGS="$CXXFLAGS -DNDEBUG"
+msg "$CXX $CXXFLAGS"
+rm -f makefile
+sed -e "s#@CXX@#$CXX#" -e "s#@CXXFLAGS@#$CXXFLAGS#" makefile.in > makefile
+msg "generated 'makefile' (run 'make')"
