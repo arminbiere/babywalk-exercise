@@ -68,7 +68,7 @@ struct clause {
 
 // Actual global state of preprocessor.
 
-static int variables;                      // Total number of variables.
+static int64_t variables;                  // Total number of variables.
 static bool found_empty_clause;            // Found empty clause.
 static std::vector<clause *> clauses;      // Contains all clauses.
 static std::vector<clause *> *occurrences; // Connections to all clauses.
@@ -83,6 +83,7 @@ static size_t propagated;      // Propagation level of trail.
 
 static signed char *values; // Values of all literals.
 static bool *marks;         // Marks for simplification.
+static bool *forced;        // Assigned at root-level.
 
 // The state of the local source solver.
 
@@ -358,6 +359,7 @@ static void init() {
   occurrences = new std::vector<clause *>[2 * variables + 1]();
   marks = new bool[2 * variables + 1]();
   values = new signed char[2 * variables + 1]();
+  forced = new bool[variables + 1]();
   occurrences += variables;
   marks += variables;
   values += variables;
@@ -375,19 +377,21 @@ static void reset() {
   delete[] occurrences;
   delete[] marks;
   delete[] values;
+  delete[] forced;
   LOG("reset data-structures");
 }
 
 // Assign a new unit and push it on the trail stack.
 
-static void assign(int lit, clause *reason) {
+static void root_level_assign(int lit, clause *reason) {
   assert(reason);
-  LOG(reason, "assign %s reason", LOG(lit));
+  LOG(reason, "assign %d reason", lit);
   assert(!values[lit]);
   assert(!values[-lit]);
   values[lit] = 1;
   values[-lit] = -1;
   trail.push_back(lit);
+  forced[abs(lit)] = true;
 }
 
 // Much simpler propagator than with watches.
@@ -396,7 +400,7 @@ static bool propagate() {
   assert(!found_empty_clause);
   while (propagated != trail.size()) {
     const int lit = trail[propagated++];
-    LOG ("propagated %s", LOG (lit));
+    LOG("propagated %s", LOG(lit));
     for (auto c : occurrences[-lit]) {
       int unit = 0;
       for (auto other : *c) {
@@ -414,14 +418,14 @@ static bool propagate() {
         found_empty_clause = true;
         return false;
       }
-      assign(unit, c);
+      root_level_assign (unit, c);
     NEXT_CLAUSE:;
     }
   }
   return true;
 }
 
-// Here start the parsing part.
+// Here starts the parsing part.
 
 static int next() {
   int ch = getc(input_file);
@@ -490,7 +494,7 @@ static void parse() {
   }
   if (ch != ' ')
     error("expected white space");
-  LOG("%u variables specified", variables);
+  LOG("%" PRId64 " variables specified", variables);
   if (!isdigit(ch = next()))
     error("expected digit");
   size_t expected = ch - '0';
@@ -506,7 +510,7 @@ static void parse() {
   }
   if (ch != '\n')
     error("expected new-line");
-  message("found 'p cnf %d %zu' header", variables, expected);
+  message("found 'p cnf %" PRId64 " %zu' header", variables, expected);
   init();
   int lit = 0;
   for (;;) {
@@ -556,7 +560,7 @@ static void parse() {
         } else if (size == 1) {
           int unit = c->literals[0];
           LOG(simplified, "found unit %s", LOG(unit));
-          assign(unit, c);
+          root_level_assign (unit, c);
           if (!propagate()) {
             verbose("root-level propagation yields conflict");
             assert(found_empty_clause);
@@ -625,15 +629,7 @@ static unsigned next_random() {
   return generator;
 }
 
-// Flip falsified literal.
-
-static void flip(int lit) {
-  LOG("flipping %s", LOG(lit));
-  assert(values[lit] < 0);
-  values[-lit] = -1;
-  values[lit] = 1;
-  stats.flipped++;
-}
+static bool next_bool() { return next_random() < 2147483648u; }
 
 // Restart by generating new assignment.
 
@@ -641,6 +637,25 @@ static void restart() {
   LOG("restarting");
   stats.restarts++;
   unsatisfied.clear();
+  for (int64_t idx = 1; idx <= variables; idx++) {
+    if (forced[idx])
+      continue;
+    signed char value = next_bool() ? -1 : 1;
+    values[idx] = value;
+    values[-idx] = -value;
+    LOG("assign %" PRId64 " in restart", value < 0 ? -idx : idx);
+  }
+}
+
+// Flip falsified literal.
+
+static void flip(int lit) {
+  LOG("flipping %s", LOG(lit));
+  assert(!forced[abs(lit)]);
+  assert(values[lit] < 0);
+  values[-lit] = -1;
+  values[lit] = 1;
+  stats.flipped++;
 }
 
 static void walksat() { restart(); }
@@ -696,8 +711,8 @@ static double average(double a, double b) { return b ? a / b : 0; }
 
 static void report() {
   double t = time();
-  message("%-21s %13zu %12.2f per second",
-          "flipped-variables:", stats.flipped, average(stats.flipped, t));
+  message("%-21s %13zu %12.2f per second", "flipped-variables:", stats.flipped,
+          average(stats.flipped, t));
   message("%-21s %26.2f seconds", "process-time:", time());
 }
 
@@ -746,6 +761,6 @@ int main(int argc, char **argv) {
   reset();
   if (thank)
     message("thanks to '%s'", thank);
-  message ("exit %d", res);
+  message("exit %d", res);
   return res;
 }
