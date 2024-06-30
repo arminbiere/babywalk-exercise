@@ -1,10 +1,7 @@
-Vivification Testing
+Local Search Testing
 --------------------
 
 - `.cnf` original CNF
-- `.out` simplified CNF
-- `.log` stdout of simplification (includes model)
-- `.err` stderr of simplification (errors for debugging)
-- `.prf` proof for deriving simplified CNF
+- `.log` stdout of solving run
+- `.err` stderr of solving run
 - `.chm` stdout of model checking
-- `.chp` stdout of proof checking

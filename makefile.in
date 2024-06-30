@@ -1,14 +1,16 @@
 CXX=@CXX@
 CXXFLAGS=@CXXFLAGS@
-all: babywalk checkmodel
+all: babywalk checkmodel generate
 babywalk: babywalk.cpp makefile
 	$(CXX) $(CXXFLAGS) -o $@ $<
 checkmodel: checkmodel.cpp makefile
 	$(CXX) $(CXXFLAGS) -o $@ $<
+generate: generate.cpp makefile
+	$(CXX) $(CXXFLAGS) -o $@ $< -lm
 format:
 	clang-format -i *.cpp
 clean:
-	rm -f babywalk checkmodel makefile
+	rm -f babywalk checkmodel generate makefile
 	rm -f test/*.log test/*.err test/*.out test/*.chm
 test: all
 	./test/run.sh

@@ -1,22 +1,19 @@
-BabyVivify Clause Vivification Preprocessor
--------------------------------------------
+BabyWalk Local Search SAT Solver
+--------------------------------
 
-This is a simple SAT preprocessor using Vivification.
+This is a simple locals search SAT solver.
 
-It is used as a template for the second project in our SAT solving course.
-As before search for 'TODO' and fill in that code.  The code as is
-compiles but just prints the original formula.  To succeed in this
-assignment your preprocessor is supposed to actually vivify
-clauses (and generate correct proof traces - see below).
+It is used as a template for the third project in our SAT solving course.
+As before search for `TODO` and fill in that code.
 
 If you run `configure && make test` the solver is built and regression
-tests in `test` are run.  If enabled the preprocessor traces resolution
-and proof deletion to a proof file, which can then be checked by the
-proof checker `checkproof`.  The resulting formula should admit the same
-model as the original formula and thus there is also a tool `checkmodel`
-which given the preprocessed (or original) CNF checks that the given
-solution (in SAT Competition output format with 's SATISFIABLE' and
-'v' lines representing the model) satisfies the formula.
+tests in `test` are run.  Only trivial unsatisfiable and otherwise
+simple satisfiable instances are used.  Still your solver is expected to
+solve those small satisfiable ones.  If solved the model checker
+'checkmodel' checks the output to satisfy the formula.
 
-The regression suite runs both checkers (the second only if the formula
-is satisfiable).  See also [`test/README.md`](test/README.md).
+There is also the `generate` too which can produce some random formulas,
+that you can also use for testing.  The clauses are all of the same length
+and default is to produce 3-SAT formulas at the hardness threshold (with
+4.267 more clauses than variables).  With `-p` as option the tool plants
+a solution and thus makes sure the formula is satisfiable.

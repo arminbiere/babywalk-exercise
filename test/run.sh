@@ -56,12 +56,12 @@ run 10 prime4
 run 10 prime9
 run 10 prime25
 run 10 prime49
-run 10 prime121
-run 10 prime169
+#run 10 prime121
+#run 10 prime169
 
 run 10 sqrt2809
 run 10 sqrt3481
-run 10 sqrt3721
-run 10 sqrt4489
-run 10 sqrt5041
-run 10 sqrt5329
+#run 10 sqrt3721
+#run 10 sqrt4489
+#run 10 sqrt5041
+#run 10 sqrt5329
