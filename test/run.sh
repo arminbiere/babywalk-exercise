@@ -35,7 +35,7 @@ run () {
     status=$?
     [ $status = 0 ] || \
     die "model checking failed:" \
-        "exit status '$status' but expected '$expected'" \
+        "exit status '$status' but expected '0'" \
         "\n(see '$chm' and '$err' for more information)"
   fi
 }

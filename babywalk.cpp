@@ -8,15 +8,29 @@ usage =
 "\n"
 "where '<option>' is one of the following\n"
 "\n"
-"  -h           print this command line option summary\n"
-"  -n           do not print satisfying assignment (model)\n"
-"  -v           increase verbosity level\n"
-"  -q           disable all messages\n"
-#ifdef LOGGING
-"  -l           enable logging for debugging\n"
-#endif          
+"  -h  print this command line option summary\n"
+"  -n  do not print satisfying assignment (model)\n"
+"  -v  increase verbosity level\n"
+"  -q  disable all messages\n"
+#ifdef LOGGING     
+"  -l  enable logging for debugging\n"
+#endif              
 "\n"
+"  --random   random literal algorithm\n"
+"  --focused  focused random walk algorithm\n"
+"  --walksat  WalkSAT algorithm (not implemented)\n"
+"  --probsat  ProbSAT algorithm (not implemented)\n"
+"\n"
+"  -f <flips>   limit total number of flips\n"
+"  -s <seed>    use '<seed>' to initialize random number generator\n"
 "  -t <string>  hash '<string>' to random number generator seed\n"
+"\n"
+"  --always-restart      restart after each flip\n"
+"  --never-restart       never schedule restarts\n"
+"  --fixed-restart       fixed constant restart interval\n"
+"  --reluctant-restart   restart interval doubled reluctantly\n"
+"  --geometric-restart   restart interval with geometric increase\n"
+"  --arithmetic-restart  restart interval with arithmetic increase\n"
 "\n"
 "and '<input>' is the path to a file with a formula in DIMACS format. If\n"
 "'<input>' is '-' we read from '<stdin>', which is also the default. We\n"
@@ -46,7 +60,18 @@ extern "C" {
 };
 
 #include <algorithm>
+#include <string>
 #include <vector>
+
+/*------------------------------------------------------------------------*/
+
+// Some global common constants.
+
+static const size_t max_size_t = ~(size_t)0;
+static const uint64_t max_uint64_t = ~(uint64_t)0;
+static const size_t invalid_position = max_size_t;
+static const size_t invalid_minimum = max_size_t;
+static const size_t invalid_break_value = max_size_t;
 
 // The main 'clause' data structure.
 
@@ -88,7 +113,35 @@ static bool *forced;        // Assigned at root-level.
 // The state of the local source solver.
 
 static std::vector<clause *> unsatisfied; // Stack of unsatisfied clauses.
+static size_t minimum = invalid_minimum;  // Minimum number unsatisfied clauses.
+static size_t best = invalid_minimum;     // Best since last restart.
+static uint64_t limit = max_uint64_t;     // Limit on number of flips.
 static uint64_t generator;                // Random number generator state.
+
+// Restart scheduling.
+
+static enum {
+  never_restart,
+  always_restart,
+  fixed_restart,
+  reluctant_restart,
+  geometric_restart,
+  arithmetic_restart,
+} restart_scheduler = reluctant_restart; // Default restart method.
+
+static uint64_t base_restart_interval; // For arithmetic restarts.
+static uint64_t reluctant_state[2];    // For reluctant restart.
+static uint64_t restart_interval;      // Current restart interval.
+static uint64_t next_restart;          // Restart limit.
+
+// Algorithm choice.
+
+static enum {
+  random_algorithm,
+  focused_algorithm,
+  walksat_algorithm,
+  probsat_algorithm
+} algorithm = walksat_algorithm; // Default local search algorithm.
 
 // Parsing state.
 
@@ -101,16 +154,23 @@ static size_t lineno = 1;
 
 static int verbosity;
 static bool do_not_print_model;
-static const char *thank;
+static const char *thank_string;
 
 // Some statistics.
 
 static struct {
-  size_t added;    // Number of added clauses (used for ID).
-  size_t parsed;   // Number of parsed clauses.
-  size_t flipped;  // Number of flipped variables.
-  size_t restarts; // Number of restarts.
+  size_t added;          // Number of added clauses (used for ID).
+  size_t parsed;         // Number of parsed clauses.
+  size_t flipped;        // Number of flipped variables.
+  size_t restarts;       // Number of restarts.
+  size_t make_visited;   // Number of clauses visited while making clauses.
+  size_t break_visited;  // Number of clauses visited while breaking clauses.
+  size_t made_clauses;   // Number of made clauses.
+  size_t broken_clauses; // Number of broken clauses.
+  size_t random_walks;   // Number of random walks.
 } stats;
+
+/*------------------------------------------------------------------------*/
 
 // Returns the time in seconds spent in this process.
 
@@ -123,6 +183,8 @@ static double time(void) {
   res += u.ru_stime.tv_sec + 1e-6 * u.ru_stime.tv_usec;
   return res;
 }
+
+/*------------------------------------------------------------------------*/
 
 // Functions to print messages follow.
 
@@ -140,10 +202,11 @@ static void message(const char *fmt, ...) {
   fflush(stdout);
 }
 
-static void verbose(const char *, ...) __attribute__((format(printf, 1, 2)));
+static void verbose(int level, const char *, ...)
+    __attribute__((format(printf, 2, 3)));
 
-static void verbose(const char *fmt, ...) {
-  if (verbosity < 1)
+static void verbose(int level, const char *fmt, ...) {
+  if (verbosity < level)
     return;
   fputs("c ", stdout);
   va_list ap;
@@ -166,6 +229,19 @@ static void die(const char *fmt, ...) {
   exit(1);
 }
 
+static void fatal(const char *, ...) __attribute__((format(printf, 1, 2)));
+
+static void fatal(const char *fmt, ...) {
+  fputs("babywalk: fatal error: ", stderr);
+  va_list ap;
+  va_start(ap, fmt);
+  vfprintf(stderr, fmt, ap);
+  va_end(ap);
+  fputc('\n', stderr);
+  abort();
+  exit(1);
+}
+
 static void error(const char *, ...) __attribute__((format(printf, 1, 2)));
 
 static void error(const char *fmt, ...) {
@@ -178,6 +254,8 @@ static void error(const char *fmt, ...) {
   fputc('\n', stderr);
   exit(1);
 }
+
+/*------------------------------------------------------------------------*/
 
 #ifdef LOGGING
 
@@ -250,6 +328,8 @@ static void LOG(const std::vector<int> &c, const char *fmt, ...) {
 
 #endif
 
+/*------------------------------------------------------------------------*/
+
 // Clause simplification during parsing.
 
 static bool tautological_clause(const std::vector<int> &clause) {
@@ -314,6 +394,8 @@ static void check_simplified(const std::vector<int> &clause) {
 
 #endif
 
+/*------------------------------------------------------------------------*/
+
 // Connect clauses and literals.
 
 static void connect_literal(int lit, clause *c) {
@@ -338,6 +420,7 @@ static clause *new_clause(const std::vector<int> &literals) {
   const size_t bytes = sizeof(clause) + size * sizeof(int);
   clause *res = (clause *)new char[bytes];
   res->size = size;
+  res->pos = invalid_position;
   res->id = stats.added++;
   memcpy(res->literals, &literals[0], size * sizeof(int));
   LOG(res, "new");
@@ -353,9 +436,11 @@ static void delete_clause(clause *c) {
   delete[](char *) c;
 }
 
+/*------------------------------------------------------------------------*/
+
 // Initialize after we know how many variables are needed.
 
-static void init() {
+static void initialize_variables() {
   occurrences = new std::vector<clause *>[2 * variables + 1]();
   marks = new bool[2 * variables + 1]();
   values = new signed char[2 * variables + 1]();
@@ -381,6 +466,8 @@ static void reset() {
   LOG("reset data-structures");
 }
 
+/*------------------------------------------------------------------------*/
+
 // Assign a new unit and push it on the trail stack.
 
 static void root_level_assign(int lit, clause *reason) {
@@ -400,7 +487,7 @@ static bool propagate() {
   assert(!found_empty_clause);
   while (propagated != trail.size()) {
     const int lit = trail[propagated++];
-    LOG("propagated %s", LOG(lit));
+    LOG("propagating %s", LOG(lit));
     for (auto c : occurrences[-lit]) {
       int unit = 0;
       for (auto other : *c) {
@@ -424,6 +511,8 @@ static bool propagate() {
   }
   return true;
 }
+
+/*------------------------------------------------------------------------*/
 
 // Here starts the parsing part.
 
@@ -498,20 +587,19 @@ static void parse() {
   if (!isdigit(ch = next()))
     error("expected digit");
   size_t expected = ch - '0';
-  const size_t SIZE_T_MAX = ~(size_t)0;
   while (isdigit(ch = next())) {
-    if (SIZE_T_MAX / 10 < expected)
+    if (max_size_t / 10 < expected)
       error("too many clauses specified in header");
     expected *= 10;
     int digit = (ch - '0');
-    if (SIZE_T_MAX - digit < expected)
+    if (max_size_t - digit < expected)
       error("too many clauses specified in header");
     expected += digit;
   }
   if (ch != '\n')
     error("expected new-line");
   message("found 'p cnf %" PRId64 " %zu' header", variables, expected);
-  init();
+  initialize_variables();
   int lit = 0;
   for (;;) {
     ch = next();
@@ -555,14 +643,14 @@ static void parse() {
         const size_t size = c->size;
         if (!size) {
           assert(!found_empty_clause);
-          verbose("found empty clause");
+          verbose(1, "found empty clause");
           found_empty_clause = true;
         } else if (size == 1) {
           int unit = c->literals[0];
           LOG(simplified, "found unit %s", LOG(unit));
           root_level_assign(unit, c);
           if (!propagate()) {
-            verbose("root-level propagation yields conflict");
+            verbose(1, "root-level propagation yields conflict");
             assert(found_empty_clause);
           }
         }
@@ -583,9 +671,13 @@ static void parse() {
   message("parsed %zu clauses in %.2f seconds", stats.parsed, time() - start);
 }
 
-// Remove satisfied clauses and falsified literals.
+/*------------------------------------------------------------------------*/
+
+// Remove falsified literals and satisfied clauses and connect remaining.
 
 static void simplify() {
+  if (found_empty_clause)
+    return;
   for (int64_t lit = -variables; lit <= variables; lit++)
     occurrences[lit].clear();
   auto begin = clauses.begin();
@@ -620,6 +712,8 @@ static void simplify() {
   clauses.resize(j - begin);
 }
 
+/*------------------------------------------------------------------------*/
+
 // Function for random number generation.
 
 static uint64_t next64() {
@@ -631,9 +725,155 @@ static uint64_t next64() {
 
 static unsigned next32() { return next64() >> 32; }
 
+// Return a double in the interval [0..1] (both inclusive).
+
+static double next_double() { return next32() / 4294967295.0; }
+
+static unsigned pick_modular(unsigned mod) {
+  assert(mod);
+  const unsigned tmp = next32();
+  const double fraction = tmp / 4294967296.0;
+  const unsigned res = mod * fraction;
+  assert(res < mod);
+  return res;
+}
+
 static bool next_bool() { return next32() < 2147483648u; }
 
+/*------------------------------------------------------------------------*/
+
 // Restart by generating new assignment.
+
+static bool satisfied(clause *c) {
+  // TODO return 'true' if the clause is satisfied.
+  return false;
+}
+
+static bool critical(clause *c) {
+  int unit = 0;
+  // TODO find single satisfied 'unit'.
+  // TODO return early with 'false' if double satisfied.
+  // TODO do not set 'unit' if all literals are false.
+  return unit;
+}
+
+static size_t break_value(int lit) {
+  assert(values[lit] > 0);
+  size_t res = 0;
+  // TODO count the number of critical clauses with 'lit'.
+  LOG("break-value %zu of literal %s", res, LOG(lit));
+  return res;
+}
+
+/*------------------------------------------------------------------------*/
+
+static void break_clause(clause *c) {
+  LOG(c, "broken");
+  // TODO push clause on 'unsatisfied'.
+  // TODO remember position of 'c' on 'unsatisfied' stack.
+  stats.broken_clauses++;
+}
+
+static void make_clause(clause *c) {
+  LOG(c, "made");
+  // TODO invalidate position in 'unsatisfied'.
+  stats.made_clauses++;
+}
+
+static bool contains(clause *c, int lit) {
+  // TODO check whether 'c' contains 'lit'.
+  return false;
+}
+
+/*------------------------------------------------------------------------*/
+
+static void make_clauses_along_occurrences(int lit) {
+  const auto &occs = occurrences[lit];
+  LOG("making clauses with %s along %zu occurrences", LOG(lit), occs.size());
+  assert(values[lit] > 0);
+  size_t made = 0;
+  for (auto c : occs) {
+    // TODO early abort is no more unsatisfied clauses left.
+    stats.make_visited++;
+    // TODO ignore clauses not on unsatisfied stack with invalid position.
+    // TODO swap clause at 'c->pos' with last unsatisfied clause.
+    make_clause(c);
+    made++;
+  }
+  LOG("made %zu clauses with flipped %s", made, LOG(lit));
+  (void)made;
+}
+
+static void make_clauses_along_unsatisfied(int lit) {
+  LOG("making clauses with %s along %zu unsatisfied", LOG(lit),
+      unsatisfied.size());
+  assert(values[lit] > 0);
+  size_t made = 0;
+  // TODO flush made clauses from 'unsatisfied' directly.
+  // TODO 'stats.make_visited++', 'made++' appropriately.
+  LOG("made %zu clauses with flipped %s", made, LOG(lit));
+  (void)made;
+}
+
+static void make_clauses(int lit) {
+  if (occurrences[lit].size() < unsatisfied.size())
+    make_clauses_along_occurrences(lit);
+  else
+    make_clauses_along_unsatisfied(lit);
+}
+
+static void break_clauses(int lit) {
+  LOG("breaking clauses with %s", LOG(lit));
+  assert(values[lit] < 0);
+  size_t broken = 0;
+  // TODO go over clause with 'lit' that could now be broken.
+  // TODO 'stats.break_visited++', 'broken++' appropriately.
+  LOG("broken %zu clauses with flipped %s", broken, LOG(lit));
+  (void)broken;
+}
+
+static void update_minimum_after_flipping(int lit) {
+  size_t unsatisfied_size = unsatisfied.size();
+  LOG("%zu unsatisfied clauses after flipping %s", unsatisfied_size, LOG(lit));
+  if (unsatisfied_size < minimum) {
+    minimum = unsatisfied_size;
+    verbose(1,
+            "minimum %zu unsatisfied clauses after %zu flipped variables"
+            " and %zu restarts",
+            minimum, stats.flipped, stats.restarts);
+  }
+  if (restart_scheduler != always_restart && restart_scheduler != never_restart)
+    if (unsatisfied_size < best) {
+      best = unsatisfied_size;
+      verbose(3,
+              "best %zu unsatisfied clauses after %zu flipped variables"
+              " and %zu restarts",
+              best, stats.flipped, stats.restarts);
+    }
+}
+
+/*------------------------------------------------------------------------*/
+
+static bool is_time_to_restart() {
+  if (restart_scheduler == always_restart)
+    return true;
+  if (restart_scheduler == never_restart)
+    return false;
+  if (stats.flipped < next_restart)
+    return false;
+  if (restart_scheduler == arithmetic_restart)
+    ; // TODO update 'restart_interval' arithmetically
+  else if (restart_scheduler == geometric_restart)
+    ; // TODO update 'restart_interval' geometrically
+  else if (restart_scheduler == reluctant_restart) {
+    ; // TODO update 'restart_interval' as Knuth using
+    ; // 'u = reluctant_state[0], v = reluctant_state[1]
+    ; // message("reluctant %" PRIu64 " %" PRIu64 "\n", u, v);
+  } else
+    assert(restart_scheduler == fixed_restart);
+  next_restart = stats.flipped + restart_interval;
+  return true;
+}
 
 static void restart() {
   LOG("restarting");
@@ -646,83 +886,219 @@ static void restart() {
     values[-idx] = -value;
     LOG("assign %" PRId64 " in restart", value < 0 ? -idx : idx);
   }
-  unsatisfied.clear();
+  for (auto c : unsatisfied)
+    c->pos = invalid_position;
+  // TODO initialize 'unsatisfied' with falsified clauses
+  // (just use 'break_clause' for falsified clause).
+  verbose(2, "%zu clauses broken after restart %zu and %zu flipped",
+          unsatisfied.size(), stats.restarts, stats.flipped);
+  best = invalid_minimum;
 }
 
-// Flip falsified literal.
+/*------------------------------------------------------------------------*/
 
-static void flip(int lit) {
+static clause *pick_unsatisfied_clause() {
+  size_t pos = 0; // TODO do something better here? Random? Or BFS?
+  clause *res = unsatisfied[pos];
+  LOG(res, "picked at position %zu", pos);
+  return res;
+}
+
+/*------------------------------------------------------------------------*/
+
+static void flip_literal(int lit) {
   LOG("flipping %s", LOG(lit));
   assert(!forced[abs(lit)]);
   assert(values[lit] < 0);
-  values[-lit] = -1;
-  values[lit] = 1;
+  // TODO flip values of lit and -lit.
   stats.flipped++;
+  make_clauses(lit);
+  break_clauses(-lit);
+  update_minimum_after_flipping(lit);
 }
 
-static clause *pick_unsatisfied_clause() {
-  return unsatisfied[next64() % unsatisfied.size()];
+/*------------------------------------------------------------------------*/
+
+static int pick_random_falsified_literal() {
+  int res = 1;
+  // TODO pick random falsified (but not forced) variable.
+  // TODO make sure 'res' has 'value[res] < 0'.
+  return res;
 }
 
-static int pick_literal_in_unsatisfied_clause(clause *c) {
-  return c->literals[next64() % c->size];
+static void random_literal() {
+  message("using random literal picking algorithm");
+  restart();
+  while (!unsatisfied.empty() && stats.flipped < limit)
+    if (is_time_to_restart())
+      restart();
+    else {
+      auto lit = pick_random_falsified_literal();
+      flip_literal(lit);
+    }
 }
 
-static void make_clauses (int lit) {
-  assert (values[lit] > 0);
+/*------------------------------------------------------------------------*/
+
+static int pick_random_literal_in_unsatisfied_clause(clause *c) {
+  assert(c->size < UINT_MAX);
+  const unsigned pos = 0; // TODO Pick random position instead!
+  int res = c->literals[pos];
+  LOG("random walk picked at position %u literal %s", pos, LOG(res));
+  stats.random_walks++;
+  return res;
 }
 
-static void break_clauses (int lit) {
-  assert (values[lit] < 0);
+static void focused_random_walk() {
+  message("using focused random walk algorithm");
+  restart();
+  while (!unsatisfied.empty() && stats.flipped < limit)
+    if (is_time_to_restart())
+      restart();
+    else {
+      auto c = pick_unsatisfied_clause();
+      auto lit = pick_random_literal_in_unsatisfied_clause(c);
+      flip_literal(lit);
+    }
+}
+
+/*------------------------------------------------------------------------*/
+
+static std::vector<int> min_break_value_literals;
+
+static int select_literal_in_unsatisfied_clause(clause *c) {
+  size_t min_break_value = invalid_break_value;
+  // TODO first gather minimum break value literals in
+  // 'min_break_value_literals'.
+  LOG(c, "minimum break value %zu in", min_break_value);
+  if (min_break_value) {
+    // TODO with probability 'p < 0.57' pick random literal in 'c'
+    // (you can reuse 'pick_random_literal_in_unsatisfied_clause'.
+  }
+  // TODO otherwise pick random literal in 'min_break_value_literals'.
+  const unsigned pos = 0; // TODO do pick a random one!
+  int res;
+  LOG("picked at position %u literal %s with break-value %zu", pos, LOG(res),
+      min_break_value);
+  return res;
 }
 
 static void walksat() {
+  message("using WalkSAT algorithm");
   restart();
-  while (!unsatisfied.empty()) {
+  while (!unsatisfied.empty() && stats.flipped < limit)
+    if (is_time_to_restart())
+      restart();
+    else {
+      auto c = pick_unsatisfied_clause();
+      auto lit = select_literal_in_unsatisfied_clause(c);
+      flip_literal(lit);
+    }
+}
+
+/*------------------------------------------------------------------------*/
+
+static int sample_literal_in_unsatisfied_clause(clause *c) {
+  return c->literals[0]; // TODO+ implement ProbSAT sampling.
+}
+
+static void probsat() {
+  message("using ProbSAT algorithm");
+  restart();
+  while (!unsatisfied.empty() && stats.flipped < limit) {
     auto c = pick_unsatisfied_clause();
-    auto lit = pick_literal_in_unsatisfied_clause(c);
-    flip(lit);
-    make_clauses(lit);
-    break_clauses(-lit);
+    auto lit = sample_literal_in_unsatisfied_clause(c);
+    flip_literal(lit);
   }
+}
+
+/*------------------------------------------------------------------------*/
+
+// Witness/model printing.
+
+static std::string buffer; // Used to fit 'v' lines into one terminal line.
+
+static void flush_buffer() {
+  fputs("v", stdout);
+  fputs(buffer.c_str(), stdout);
+  fputc('\n', stdout);
+  buffer.clear();
+}
+
+static void print_value(int lit) {
+  char str[32];
+  sprintf(str, " %d", lit);
+  size_t l = strlen(str);
+  if (buffer.size() + l > 74)
+    flush_buffer();
+  buffer += str;
 }
 
 static void print_values() {
-  size_t printed = 0;
   for (int64_t idx = 1; idx <= variables; idx++) {
     auto value = values[idx];
-    if (!value)
-      continue;
-    if (!(printed % 8)) {
-      if (printed)
-        fputc('\n', stdout);
-      fputc('v', stdout);
-    }
-    printf(" %" PRId64, value * idx);
-    printed++;
+    if (value)
+      print_value(value * idx);
   }
-  if (!(printed % 8)) {
-    if (printed)
-      fputc('\n', stdout);
-    fputc('v', stdout);
-  }
-  fputs(" 0\n", stdout);
+  print_value(0);
+  if (!buffer.empty())
+    flush_buffer();
 }
+
+/*------------------------------------------------------------------------*/
 
 // Main solving routine.
 
+static void initialize_seed() {
+  if (thank_string) {
+    for (auto p = thank_string; *p; p++)
+      generator ^= *p, (void)next64();
+    verbose(1, "hashed '%s' to seed '%" PRIu64, thank_string, generator);
+  }
+  message("seed %" PRIu64, generator);
+}
+
+static void initialize_restart() {
+  base_restart_interval = restart_interval = 100 * (uint64_t)variables;
+  if (restart_scheduler == never_restart)
+    message("never restart");
+  else if (restart_scheduler == always_restart)
+    message("always restart");
+  else if (restart_scheduler == fixed_restart)
+    message("fixed restart interval of %" PRIu64, restart_interval);
+  else if (restart_scheduler == reluctant_restart)
+    message("reluctant restart interval of %" PRIu64, restart_interval);
+  else if (restart_scheduler == geometric_restart)
+    message("geometric restart interval of %" PRIu64, restart_interval);
+  else
+    message("arithmetic restart interval of %" PRIu64, restart_interval);
+  next_restart = stats.restarts + restart_interval;
+}
+
 static int solve() {
+  initialize_seed();
+  message("limit %" PRIu64, limit);
+  initialize_restart();
   if (found_empty_clause) {
     fputs("s UNSATISFIABLE\n", stdout);
     fflush(stdout);
     return 20;
   }
-  if (thank) {
-    for (auto p = thank; *p; p++)
-      generator ^= *p, (void)next64();
-    verbose("hashed '%s' to seed '%" PRIu64, thank, generator);
+  if (algorithm == random_algorithm)
+    random_literal();
+  else if (algorithm == focused_algorithm)
+    focused_random_walk();
+  else if (algorithm == walksat_algorithm)
+    walksat();
+  else {
+    assert(algorithm == probsat_algorithm);
+    probsat();
   }
-  walksat();
+  if (!unsatisfied.empty()) {
+    fputs("s UNKNOWN\n", stdout);
+    fflush(stdout);
+    return 0;
+  }
   fputs("s SATISFIABLE\n", stdout);
   fflush(stdout);
   if (!do_not_print_model)
@@ -730,22 +1106,71 @@ static int solve() {
   return 10;
 }
 
+/*------------------------------------------------------------------------*/
+
 // Common statistics functions.
 
 static double average(double a, double b) { return b ? a / b : 0; }
+static double percent(double a, double b) { return average(100 * a, b); }
 
 // Report statistics.
 
 static void report() {
   double t = time();
-  message("%-21s %13zu %12.2f per second", "flipped-variables:", stats.flipped,
+  message("%-21s %13zu %14.2f flipped/restart", "restarts:", stats.restarts,
+          average(stats.flipped, stats.restarts));
+  message("%-21s %13zu %14.2f per second", "flipped-variables:", stats.flipped,
           average(stats.flipped, t));
-  message("%-21s %26.2f seconds", "process-time:", time());
+  message("%-21s %13zu %14.2f %% flipped", "random-walks:", stats.random_walks,
+          percent(stats.random_walks, stats.flipped));
+  message("%-21s %13zu %14.2f per flip", "made-clauses:", stats.made_clauses,
+          average(stats.made_clauses, stats.flipped));
+  message("%-21s %13zu %14.2f per flip", "make-visited:", stats.make_visited,
+          average(stats.make_visited, stats.flipped));
+  message("%-21s %13zu %14.2f per flip",
+          "broken-clauses:", stats.broken_clauses,
+          average(stats.broken_clauses, stats.flipped));
+  message("%-21s %13zu %14.2f per flip", "break-visited:", stats.break_visited,
+          average(stats.break_visited, stats.flipped));
+  message("%-21s %28.2f seconds", "process-time:", time());
 }
+
+/*------------------------------------------------------------------------*/
 
 // Parse command line options.
 
+static bool parse_uint64_t(const char *str, uint64_t &res) {
+  const uint64_t max_seed = max_uint64_t;
+  if (!isdigit(*str))
+    return false;
+  res = *str - '0';
+  int ch;
+  for (const char *p = str + 1; (ch = *p); p++) {
+    if (!isdigit(ch))
+      return false;
+    if (max_seed / 10 < res)
+      return false;
+    res *= 10;
+    const int digit = ch - '0';
+    if (!res && !digit)
+      return false;
+    if (max_seed - digit < res)
+      return false;
+    res += digit;
+  }
+  return true;
+}
+
+static void check_only_one_restart_scheduler(const char *prev,
+                                             const char *arg) {
+  if (prev)
+    die("can not combine restart scheduler '%s' and '%s'", prev, arg);
+}
+
 static void options(int argc, char **argv) {
+  const char *seed_string = 0;
+  const char *limit_string = 0;
+  const char *restart_string = 0;
   for (int i = 1; i != argc; i++) {
     const char *arg = argv[i];
     if (!strcmp(arg, "-h")) {
@@ -755,10 +1180,35 @@ static void options(int argc, char **argv) {
       verbosity += (verbosity != INT_MAX);
     else if (!strcmp(arg, "-q"))
       verbosity = -1;
-    else if (!strcmp(arg, "-t")) {
+    else if (!strcmp(arg, "-f")) {
+      if (++i == argc)
+        die("argument to '-f' missing (try '-h')");
+      arg = argv[i];
+      if (limit_string)
+        die("multiple '-f' options ('-f %s' and '-f %s')", limit_string, arg);
+      if (!parse_uint64_t(arg, limit))
+        die("invalid argument in '-f %s'", arg);
+      limit_string = arg;
+    } else if (!strcmp(arg, "-s")) {
+      if (++i == argc)
+        die("argument to '-s' missing (try '-h')");
+      arg = argv[i];
+      if (seed_string)
+        die("multiple '-s' options ('-s %s' and '-s %s')", seed_string, arg);
+      if (thank_string)
+        die("'-t %s' and '-s %s'", thank_string, arg);
+      if (!parse_uint64_t(arg, generator))
+        die("invalid argument in '-s %s'", arg);
+      seed_string = arg;
+    } else if (!strcmp(arg, "-t")) {
       if (++i == argc)
         die("argument to '-t' missing (try '-h')");
-      thank = argv[i];
+      arg = argv[i];
+      if (thank_string)
+        die("multiple '-t' options ('-t %s' and '-t %s')", thank_string, arg);
+      if (seed_string)
+        die("'-s %s' and '-t %s'", seed_string, arg);
+      thank_string = arg;
     } else if (!strcmp(arg, "-l"))
 #ifdef LOGGING
       verbosity = INT_MAX;
@@ -767,7 +1217,39 @@ static void options(int argc, char **argv) {
 #endif
     else if (!strcmp(arg, "-n"))
       do_not_print_model = true;
-    else if (arg[0] == '-' && arg[1])
+    else if (!strcmp(arg, "--random"))
+      algorithm = random_algorithm;
+    else if (!strcmp(arg, "--focused"))
+      algorithm = focused_algorithm;
+    else if (!strcmp(arg, "--probsat"))
+      algorithm = probsat_algorithm;
+    else if (!strcmp(arg, "--walksat"))
+      algorithm = walksat_algorithm;
+    else if (!strcmp(arg, "--always-restart")) {
+      check_only_one_restart_scheduler(restart_string, arg);
+      restart_scheduler = always_restart;
+      restart_string = arg;
+    } else if (!strcmp(arg, "--never-restart")) {
+      check_only_one_restart_scheduler(restart_string, arg);
+      restart_scheduler = never_restart;
+      restart_string = arg;
+    } else if (!strcmp(arg, "--fixed-restart")) {
+      check_only_one_restart_scheduler(restart_string, arg);
+      restart_scheduler = fixed_restart;
+      restart_string = arg;
+    } else if (!strcmp(arg, "--reluctant-restart")) {
+      check_only_one_restart_scheduler(restart_string, arg);
+      restart_scheduler = reluctant_restart;
+      restart_string = arg;
+    } else if (!strcmp(arg, "--geometric-restart")) {
+      check_only_one_restart_scheduler(restart_string, arg);
+      restart_scheduler = geometric_restart;
+      restart_string = arg;
+    } else if (!strcmp(arg, "--arithmetic-restart")) {
+      check_only_one_restart_scheduler(restart_string, arg);
+      restart_scheduler = arithmetic_restart;
+      restart_string = arg;
+    } else if (arg[0] == '-' && arg[1])
       die("invalid option '%s' (try '-h')", arg);
     else if (!input_path)
       input_path = arg;
@@ -776,13 +1258,17 @@ static void options(int argc, char **argv) {
   }
 }
 
+/*------------------------------------------------------------------------*/
+
 static void banner() { message("BabyWalk Local Search SAT Solver"); }
 
-static void goodbye (int res) {
-  if (thank)
-    message("thanks to '%s'", thank);
+static void goodbye(int res) {
+  if (thank_string)
+    message("%ssolved thanks to '%s'", res ? "" : "un", thank_string);
   message("exit %d", res);
 }
+
+/*------------------------------------------------------------------------*/
 
 int main(int argc, char **argv) {
   options(argc, argv);
