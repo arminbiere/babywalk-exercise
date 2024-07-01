@@ -21,9 +21,10 @@ usage =
 "  --walksat  WalkSAT algorithm (not implemented)\n"
 "  --probsat  ProbSAT algorithm (not implemented)\n"
 "\n"
-"  -f <flips>   limit total number of flips\n"
-"  -s <seed>    use '<seed>' to initialize random number generator\n"
-"  -t <string>  hash '<string>' to random number generator seed\n"
+"  -f <flips>        limit total number of flips\n"
+"  -s <seed>         use '<seed>' to initialize random number generator\n"
+"  -t <seconds>      limit to this number of seconds\n"
+"  --thank <string>  hash '<string>' to random number generator seed\n"
 "\n"
 "  --always-restart      restart after each flip\n"
 "  --never-restart       never schedule restarts\n"
@@ -45,6 +46,7 @@ usage =
 #include <cctype>
 #include <cinttypes>
 #include <climits>
+#include <csignal>
 #include <cstdarg>
 #include <cstdint>
 #include <cstdio>
@@ -114,12 +116,16 @@ static bool *forced;        // Assigned at root-level.
 // The state of the local source solver.
 
 static std::vector<clause *> unsatisfied; // Stack of unsatisfied clauses.
-static size_t minimum = invalid_minimum;  // Minimum number unsatisfied clauses.
-static size_t best = invalid_minimum;     // Best since last restart.
 static uint64_t limit = invalid_limit;    // Limit on number of flips.
 static uint64_t generator;                // Random number generator state.
-static uint64_t minimum_restarts;         // Number of restarts for minimum.
-static uint64_t minimum_flipped;          // Number flipped for minimum.
+
+static size_t minimum = invalid_minimum; // Minimum unsatisfied
+static size_t best = invalid_minimum;    // Best since last restart.
+static uint64_t minimum_restarts;        // Number of restarts for minimum.
+static uint64_t minimum_flipped;         // Number flipped for minimum.
+
+static volatile bool terminate;         // Force termination.
+static volatile int termination_signal; // Triggered by this signal.
 
 // Restart scheduling.
 
@@ -452,6 +458,34 @@ static void initialize_variables() {
   marks += variables;
   values += variables;
   LOG("initialized data-structures");
+}
+
+// Initialize signal handlers.
+
+static void catch_signal(int sig) {
+  termination_signal = sig;
+  terminate = true;
+}
+
+static const char *describe_signal(int sig) {
+  if (sig == SIGINT)
+    return "stop signal (SIGINT)";
+  if (sig == SIGKILL)
+    return "kill signal (SIGKILL)";
+  if (sig == SIGSEGV)
+    return "segmentation fault signal (SIGSEGV)";
+  if (sig == SIGTERM)
+    return "forced termination signal (SIGTERM)";
+  if (sig == SIGALRM)
+    return "timeout signal (SIGALRM)";
+  return "unknown";
+}
+
+static void init() {
+  (void)signal(SIGINT, catch_signal);
+  (void)signal(SIGKILL, catch_signal);
+  (void)signal(SIGSEGV, catch_signal);
+  (void)signal(SIGTERM, catch_signal);
 }
 
 // At the end reclaim all allocated memory.
@@ -982,7 +1016,7 @@ static int select_literal_in_unsatisfied_clause(clause *c) {
   }
   // TODO otherwise pick random literal in 'min_break_value_literals'.
   const unsigned pos = 0; // TODO do pick a random one!
-  int res;
+  int res = 0;            // TODO pick the literal at 'pos'.
   LOG("picked at position %u literal %s with break-value %zu", pos, LOG(res),
       min_break_value);
   return res;
@@ -1058,7 +1092,7 @@ static void initialize_seed() {
   if (thank_string) {
     for (auto p = thank_string; *p; p++)
       generator ^= *p, (void)next64();
-    verbose(1, "hashed '%s' to seed '%" PRIu64, thank_string, generator);
+    verbose(1, "hashed '%s' to seed '%" PRIu64 "'", thank_string, generator);
   }
   message("seed %" PRIu64, generator);
 }
@@ -1087,34 +1121,40 @@ static int solve() {
   else
     message("limit %" PRIu64 " on number of flipped variables", limit);
   initialize_restart();
+  int res = 0;
   if (found_empty_clause) {
     fputs("s UNSATISFIABLE\n", stdout);
     fflush(stdout);
-    return 20;
+    res = 20;
+  } else {
+    if (algorithm == random_algorithm)
+      random_literal();
+    else if (algorithm == focused_algorithm)
+      focused_random_walk();
+    else if (algorithm == walksat_algorithm)
+      walksat();
+    else {
+      assert(algorithm == probsat_algorithm);
+      probsat();
+    }
+    message("reached minimum %zu unsatisfied clauses after "
+            "%" PRIu64 " flipped variables and %" PRIu64 " restarts",
+            minimum, minimum_flipped, minimum_restarts);
+    if (!terminate && unsatisfied.empty()) {
+      fputs("s SATISFIABLE\n", stdout);
+      fflush(stdout);
+      if (!do_not_print_model)
+        print_values();
+      res = 10;
+    } else {
+      if (terminate)
+        printf("c terminated by %s\n", describe_signal(termination_signal));
+      fputs("s UNKNOWN\n", stdout);
+      fflush(stdout);
+      res = 0;
+    }
   }
-  if (algorithm == random_algorithm)
-    random_literal();
-  else if (algorithm == focused_algorithm)
-    focused_random_walk();
-  else if (algorithm == walksat_algorithm)
-    walksat();
-  else {
-    assert(algorithm == probsat_algorithm);
-    probsat();
-  }
-  message("reached minimum %zu unsatisfied clauses after "
-          "%zu flipped variables and %zu restarts",
-          minimum, stats.flipped, stats.restarts);
-  if (!unsatisfied.empty()) {
-    fputs("s UNKNOWN\n", stdout);
-    fflush(stdout);
-    return 0;
-  }
-  fputs("s SATISFIABLE\n", stdout);
-  fflush(stdout);
-  if (!do_not_print_model)
-    print_values();
-  return 10;
+  return res;
 }
 
 /*------------------------------------------------------------------------*/
@@ -1127,35 +1167,38 @@ static double percent(double a, double b) { return average(100 * a, b); }
 // Report statistics.
 
 static void report() {
+  if (verbosity < 0)
+    return;
   double t = time();
-  message("%-21s %13" PRIu64 " %14.2f flipped/restart",
-          "restarts:", stats.restarts, average(stats.flipped, stats.restarts));
-  message("%-21s %13" PRIu64 " %14.2f per second",
-          "flipped-variables:", stats.flipped, average(stats.flipped, t));
-  message("%-21s %13" PRIu64 " %14.2f %% flipped",
-          "random-walks:", stats.random_walks,
-          percent(stats.random_walks, stats.flipped));
-  message("%-21s %13" PRIu64 " %14.2f per flip",
-          "made-clauses:", stats.made_clauses,
-          average(stats.made_clauses, stats.flipped));
-  message("%-21s %13" PRIu64 " %14.2f per flip",
-          "make-visited:", stats.make_visited,
-          average(stats.make_visited, stats.flipped));
-  message("%-21s %13" PRIu64 " %14.2f per flip",
-          "broken-clauses:", stats.broken_clauses,
-          average(stats.broken_clauses, stats.flipped));
-  message("%-21s %13" PRIu64 " %14.2f per flip",
-          "break-visited:", stats.break_visited,
-          average(stats.break_visited, stats.flipped));
-  message("%-21s %28.2f seconds", "process-time:", time());
+  printf("c %-21s %13" PRIu64 " %14.2f flipped/restart\n",
+         "restarts:", stats.restarts, average(stats.flipped, stats.restarts));
+  printf("c %-21s %13" PRIu64 " %14.2f per second\n",
+         "flipped-variables:", stats.flipped, average(stats.flipped, t));
+  printf("c %-21s %13" PRIu64 " %14.2f %% flipped\n",
+         "random-walks:", stats.random_walks,
+         percent(stats.random_walks, stats.flipped));
+  printf("c %-21s %13" PRIu64 " %14.2f per flip\n",
+         "made-clauses:", stats.made_clauses,
+         average(stats.made_clauses, stats.flipped));
+  printf("c %-21s %13" PRIu64 " %14.2f per flip\n",
+         "make-visited:", stats.make_visited,
+         average(stats.make_visited, stats.flipped));
+  printf("c %-21s %13" PRIu64 " %14.2f per flip\n",
+         "broken-clauses:", stats.broken_clauses,
+         average(stats.broken_clauses, stats.flipped));
+  printf("c %-21s %13" PRIu64 " %14.2f per flip\n",
+         "break-visited:", stats.break_visited,
+         average(stats.break_visited, stats.flipped));
+  printf("c %-21s %28.2f seconds\n", "process-time:", t);
+  fflush(stdout);
 }
 
 /*------------------------------------------------------------------------*/
 
 // Parse command line options.
 
-static bool parse_uint64_t(const char *str, uint64_t &res) {
-  const uint64_t max_seed = max_uint64_t;
+template <class T> static bool parse_unsigned(const char *str, T &res) {
+  const T max = ~(T)0;
   if (!isdigit(*str))
     return false;
   res = *str - '0';
@@ -1163,13 +1206,13 @@ static bool parse_uint64_t(const char *str, uint64_t &res) {
   for (const char *p = str + 1; (ch = *p); p++) {
     if (!isdigit(ch))
       return false;
-    if (max_seed / 10 < res)
+    if (max / 10 < res)
       return false;
     res *= 10;
     const int digit = ch - '0';
     if (!res && !digit)
       return false;
-    if (max_seed - digit < res)
+    if (max - digit < res)
       return false;
     res += digit;
   }
@@ -1186,6 +1229,7 @@ static void options(int argc, char **argv) {
   const char *seed_string = 0;
   const char *limit_string = 0;
   const char *restart_string = 0;
+  const char *timeout_string = 0;
   for (int i = 1; i != argc; i++) {
     const char *arg = argv[i];
     if (!strcmp(arg, "-h")) {
@@ -1201,7 +1245,7 @@ static void options(int argc, char **argv) {
       arg = argv[i];
       if (limit_string)
         die("multiple '-f' options ('-f %s' and '-f %s')", limit_string, arg);
-      if (!parse_uint64_t(arg, limit))
+      if (!parse_unsigned(arg, limit))
         die("invalid argument in '-f %s'", arg);
       limit_string = arg;
     } else if (!strcmp(arg, "-s")) {
@@ -1211,19 +1255,32 @@ static void options(int argc, char **argv) {
       if (seed_string)
         die("multiple '-s' options ('-s %s' and '-s %s')", seed_string, arg);
       if (thank_string)
-        die("'-t %s' and '-s %s'", thank_string, arg);
-      if (!parse_uint64_t(arg, generator))
+        die("'--thank %s' and '-s %s'", thank_string, arg);
+      if (!parse_unsigned(arg, generator))
         die("invalid argument in '-s %s'", arg);
       seed_string = arg;
+    } else if (!strcmp(arg, "--thank")) {
+      if (++i == argc)
+        die("argument to '--thank' missing (try '-h')");
+      arg = argv[i];
+      if (thank_string)
+        die("multiple '--thank' options ('--thank %s' and '--thank %s')",
+            thank_string, arg);
+      if (seed_string)
+        die("'-s %s' and '--thank %s'", seed_string, arg);
+      thank_string = arg;
     } else if (!strcmp(arg, "-t")) {
       if (++i == argc)
         die("argument to '-t' missing (try '-h')");
+      if (timeout_string)
+        die("multiple '-t' options ('-t %s' and '-t %s')", timeout_string, arg);
       arg = argv[i];
-      if (thank_string)
-        die("multiple '-t' options ('-t %s' and '-t %s')", thank_string, arg);
-      if (seed_string)
-        die("'-s %s' and '-t %s'", seed_string, arg);
-      thank_string = arg;
+      unsigned seconds;
+      if (!parse_unsigned(arg, seconds))
+        die("invalid argument in '-t %s'", arg);
+      timeout_string = arg;
+      (void)signal(SIGALRM, catch_signal);
+      (void)alarm(seconds);
     } else if (!strcmp(arg, "-l"))
 #ifdef LOGGING
       verbosity = INT_MAX;
@@ -1288,6 +1345,7 @@ static void goodbye(int res) {
 int main(int argc, char **argv) {
   options(argc, argv);
   banner();
+  init();
   parse();
   simplify();
   int res = solve();
