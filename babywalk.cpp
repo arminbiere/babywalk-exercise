@@ -991,7 +991,7 @@ static int pick_random_falsified_literal() {
 static void random_literal() {
   message("using random literal picking algorithm");
   restart();
-  while (!unsatisfied.empty() && stats.flipped < limit)
+  while (!unsatisfied.empty() && stats.flipped < limit && !terminate)
     if (is_time_to_restart())
       restart();
     else {
@@ -1014,7 +1014,7 @@ static int pick_random_literal_in_unsatisfied_clause(clause *c) {
 static void focused_random_walk() {
   message("using focused random walk algorithm");
   restart();
-  while (!unsatisfied.empty() && stats.flipped < limit)
+  while (!unsatisfied.empty() && stats.flipped < limit && !terminate)
     if (is_time_to_restart())
       restart();
     else {
@@ -1048,7 +1048,7 @@ static int select_literal_in_unsatisfied_clause(clause *c) {
 static void walksat() {
   message("using WalkSAT algorithm");
   restart();
-  while (!unsatisfied.empty() && stats.flipped < limit)
+  while (!unsatisfied.empty() && stats.flipped < limit && !terminate)
     if (is_time_to_restart())
       restart();
     else {
@@ -1067,7 +1067,7 @@ static int sample_literal_in_unsatisfied_clause(clause *c) {
 static void probsat() {
   message("using ProbSAT algorithm");
   restart();
-  while (!unsatisfied.empty() && stats.flipped < limit) {
+  while (!unsatisfied.empty() && stats.flipped < limit && !terminate) {
     auto c = pick_unsatisfied_clause();
     auto lit = sample_literal_in_unsatisfied_clause(c);
     flip_literal(lit);
