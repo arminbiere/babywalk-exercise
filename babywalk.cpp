@@ -505,7 +505,7 @@ static void reset() {
   delete[] marks;
   delete[] values;
   delete[] forced;
-  LOG("reset data-structures");
+  verbose(2, "reset data-structures");
 }
 
 /*------------------------------------------------------------------------*/
@@ -851,6 +851,8 @@ static void make_clauses_along_occurrences(int lit) {
     stats.make_visited++;
     // TODO ignore clauses not on unsatisfied stack with invalid position.
     // TODO swap clause at 'c->pos' with last unsatisfied clause.
+    // TODO make sure to adjust statistics:
+    // 'stats.made_clauses' and 'stats.make_visited'.
     make_clause(c);
     made++;
   }
@@ -864,7 +866,8 @@ static void make_clauses_along_unsatisfied(int lit) {
   assert(values[lit] > 0);
   size_t made = 0;
   // TODO flush made clauses from 'unsatisfied' directly.
-  // TODO 'stats.make_visited++', 'made++' appropriately.
+  // TODO make sure to adjust statistics:
+  // 'stats.made_clauses' and 'stats.make_visited'.
   LOG("made %zu clauses with flipped %s", made, LOG(lit));
   (void)made;
 }
@@ -945,6 +948,8 @@ static void restart() {
     c->pos = invalid_position;
   // TODO initialize 'unsatisfied' with falsified clauses
   // (just use 'break_clause' for falsified clause).
+  // TODO make sure to increment statistics:
+  // 'stats.broken_clauses' and 'stats.break_visited'.
   verbose(2, "%zu clauses broken after restart %zu and %zu flipped",
           unsatisfied.size(), stats.restarts, stats.flipped);
   best = invalid_minimum;
