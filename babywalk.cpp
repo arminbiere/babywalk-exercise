@@ -72,6 +72,7 @@ static const uint64_t max_uint64_t = ~(uint64_t)0;
 static const size_t invalid_position = max_size_t;
 static const size_t invalid_minimum = max_size_t;
 static const size_t invalid_break_value = max_size_t;
+static const uint64_t invalid_limit = max_uint64_t;
 
 // The main 'clause' data structure.
 
@@ -115,7 +116,7 @@ static bool *forced;        // Assigned at root-level.
 static std::vector<clause *> unsatisfied; // Stack of unsatisfied clauses.
 static size_t minimum = invalid_minimum;  // Minimum number unsatisfied clauses.
 static size_t best = invalid_minimum;     // Best since last restart.
-static uint64_t limit = max_uint64_t;     // Limit on number of flips.
+static uint64_t limit = invalid_limit;    // Limit on number of flips.
 static uint64_t generator;                // Random number generator state.
 static uint64_t minimum_restarts;         // Number of restarts for minimum.
 static uint64_t minimum_flipped;          // Number flipped for minimum.
@@ -834,9 +835,8 @@ static void break_clauses(int lit) {
   (void)broken;
 }
 
-static void update_minimum_after_flipping(int lit) {
+static void update_minimum() {
   size_t unsatisfied_size = unsatisfied.size();
-  LOG("%zu unsatisfied clauses after flipping %s", unsatisfied_size, LOG(lit));
   if (unsatisfied_size < minimum) {
     minimum = unsatisfied_size;
     minimum_restarts = stats.restarts;
@@ -897,6 +897,7 @@ static void restart() {
   verbose(2, "%zu clauses broken after restart %zu and %zu flipped",
           unsatisfied.size(), stats.restarts, stats.flipped);
   best = invalid_minimum;
+  update_minimum();
 }
 
 /*------------------------------------------------------------------------*/
@@ -918,7 +919,7 @@ static void flip_literal(int lit) {
   stats.flipped++;
   make_clauses(lit);
   break_clauses(-lit);
-  update_minimum_after_flipping(lit);
+  update_minimum();
 }
 
 /*------------------------------------------------------------------------*/
@@ -1081,7 +1082,10 @@ static void initialize_restart() {
 
 static int solve() {
   initialize_seed();
-  message("limit %" PRIu64, limit);
+  if (limit == invalid_position)
+    message("unlimited number of flipped variables");
+  else
+    message("limit %" PRIu64 " on number of flipped variables", limit);
   initialize_restart();
   if (found_empty_clause) {
     fputs("s UNSATISFIABLE\n", stdout);
@@ -1098,6 +1102,9 @@ static int solve() {
     assert(algorithm == probsat_algorithm);
     probsat();
   }
+  message("reached minimum %zu unsatisfied clauses after "
+          "%zu flipped variables and %zu restarts",
+          minimum, stats.flipped, stats.restarts);
   if (!unsatisfied.empty()) {
     fputs("s UNKNOWN\n", stdout);
     fflush(stdout);
