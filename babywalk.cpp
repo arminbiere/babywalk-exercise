@@ -839,6 +839,8 @@ static void update_minimum_after_flipping(int lit) {
   LOG("%zu unsatisfied clauses after flipping %s", unsatisfied_size, LOG(lit));
   if (unsatisfied_size < minimum) {
     minimum = unsatisfied_size;
+    minimum_restarts = stats.restarts;
+    minimum_flipped = stats.flipped;
     verbose(1,
             "minimum %zu unsatisfied clauses after %zu flipped variables"
             " and %zu restarts",
