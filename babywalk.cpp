@@ -117,6 +117,8 @@ static size_t minimum = invalid_minimum;  // Minimum number unsatisfied clauses.
 static size_t best = invalid_minimum;     // Best since last restart.
 static uint64_t limit = max_uint64_t;     // Limit on number of flips.
 static uint64_t generator;                // Random number generator state.
+static uint64_t minimum_restarts;         // Number of restarts for minimum.
+static uint64_t minimum_flipped;          // Number flipped for minimum.
 
 // Restart scheduling.
 
@@ -159,15 +161,15 @@ static const char *thank_string;
 // Some statistics.
 
 static struct {
-  size_t added;          // Number of added clauses (used for ID).
-  size_t parsed;         // Number of parsed clauses.
-  size_t flipped;        // Number of flipped variables.
-  size_t restarts;       // Number of restarts.
-  size_t make_visited;   // Number of clauses visited while making clauses.
-  size_t break_visited;  // Number of clauses visited while breaking clauses.
-  size_t made_clauses;   // Number of made clauses.
-  size_t broken_clauses; // Number of broken clauses.
-  size_t random_walks;   // Number of random walks.
+  uint64_t added;          // Number of added clauses (used for ID).
+  uint64_t parsed;         // Number of parsed clauses.
+  uint64_t flipped;        // Number of flipped variables.
+  uint64_t restarts;       // Number of restarts.
+  uint64_t make_visited;   // Number of clauses visited while making clauses.
+  uint64_t break_visited;  // Number of clauses visited while breaking clauses.
+  uint64_t made_clauses;   // Number of made clauses.
+  uint64_t broken_clauses; // Number of broken clauses.
+  uint64_t random_walks;   // Number of random walks.
 } stats;
 
 /*------------------------------------------------------------------------*/
@@ -1117,20 +1119,24 @@ static double percent(double a, double b) { return average(100 * a, b); }
 
 static void report() {
   double t = time();
-  message("%-21s %13zu %14.2f flipped/restart", "restarts:", stats.restarts,
-          average(stats.flipped, stats.restarts));
-  message("%-21s %13zu %14.2f per second", "flipped-variables:", stats.flipped,
-          average(stats.flipped, t));
-  message("%-21s %13zu %14.2f %% flipped", "random-walks:", stats.random_walks,
+  message("%-21s %13" PRIu64 " %14.2f flipped/restart",
+          "restarts:", stats.restarts, average(stats.flipped, stats.restarts));
+  message("%-21s %13" PRIu64 " %14.2f per second",
+          "flipped-variables:", stats.flipped, average(stats.flipped, t));
+  message("%-21s %13" PRIu64 " %14.2f %% flipped",
+          "random-walks:", stats.random_walks,
           percent(stats.random_walks, stats.flipped));
-  message("%-21s %13zu %14.2f per flip", "made-clauses:", stats.made_clauses,
+  message("%-21s %13" PRIu64 " %14.2f per flip",
+          "made-clauses:", stats.made_clauses,
           average(stats.made_clauses, stats.flipped));
-  message("%-21s %13zu %14.2f per flip", "make-visited:", stats.make_visited,
+  message("%-21s %13" PRIu64 " %14.2f per flip",
+          "make-visited:", stats.make_visited,
           average(stats.make_visited, stats.flipped));
-  message("%-21s %13zu %14.2f per flip",
+  message("%-21s %13" PRIu64 " %14.2f per flip",
           "broken-clauses:", stats.broken_clauses,
           average(stats.broken_clauses, stats.flipped));
-  message("%-21s %13zu %14.2f per flip", "break-visited:", stats.break_visited,
+  message("%-21s %13" PRIu64 " %14.2f per flip",
+          "break-visited:", stats.break_visited,
           average(stats.break_visited, stats.flipped));
   message("%-21s %28.2f seconds", "process-time:", time());
 }
