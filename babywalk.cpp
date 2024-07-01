@@ -127,6 +127,11 @@ static uint64_t minimum_flipped;         // Number flipped for minimum.
 static volatile bool terminate;         // Force termination.
 static volatile int termination_signal; // Triggered by this signal.
 
+#ifndef NDEBUG
+static std::vector<int> original_literals;  // Original clauses
+static std::vector<size_t> original_lineno; // and their lines.
+#endif
+
 // Restart scheduling.
 
 static enum {
@@ -638,6 +643,9 @@ static void parse() {
   message("found 'p cnf %" PRId64 " %zu' header", variables, expected);
   initialize_variables();
   int lit = 0;
+#ifndef NDEBUG
+  size_t start_of_clause_lineno = 0;
+#endif
   for (;;) {
     ch = next();
     if (ch == ' ' || ch == '\n')
@@ -651,6 +659,9 @@ static void parse() {
     }
     if (!isdigit(ch))
       error("expected digit");
+#ifndef NDEBUG
+    start_of_clause_lineno = lineno;
+#endif
     if (stats.parsed == expected)
       error("specified clauses exceeded");
     lit = ch - '0';
@@ -667,8 +678,11 @@ static void parse() {
       error("expected white-space");
     if (lit > variables)
       error("invalid variable %d", lit);
+    lit *= sign;
+#ifndef NDEBUG
+    original_literals.push_back(lit);
+#endif
     if (lit) {
-      lit *= sign;
       unsimplified.push_back(lit);
     } else {
       stats.parsed++;
@@ -693,6 +707,9 @@ static void parse() {
         }
       }
       unsimplified.clear();
+#ifndef NDEBUG
+      original_lineno.push_back(start_of_clause_lineno);
+#endif
     }
   }
   if (lit)
@@ -1114,6 +1131,38 @@ static void initialize_restart() {
   next_restart = stats.restarts + restart_interval;
 }
 
+#ifndef NDEBUG
+
+static void check_original_clauses_satisfied() {
+  size_t start_of_last_clause = 0;
+  bool satisfied = false;
+  size_t id = 0;
+  for (size_t i = 0; i != original_literals.size(); i++) {
+    auto lit = original_literals[i];
+    if (lit) {
+      if (values[lit] > 0)
+        satisfied = true;
+    } else if (satisfied) {
+      start_of_last_clause = i + 1;
+      satisfied = false;
+      id++;
+    } else {
+      fprintf(stderr,
+              "babywalk: fatal error: "
+              "original clause[%zu] at line %zu unsatisfied:\n",
+              id + 1, original_lineno[id]);
+      for (size_t j = start_of_last_clause; j != i; j++)
+        fprintf(stderr, "%d ", original_literals[j]);
+      fputs("0\n", stderr);
+      fflush(stderr);
+      abort();
+      exit(1);
+    }
+  }
+}
+
+#endif
+
 static int solve() {
   initialize_seed();
   if (limit == invalid_position)
@@ -1141,6 +1190,9 @@ static int solve() {
             "%" PRIu64 " flipped variables and %" PRIu64 " restarts",
             minimum, minimum_flipped, minimum_restarts);
     if (!terminate && unsatisfied.empty()) {
+#ifndef NDEBUG
+      check_original_clauses_satisfied();
+#endif
       fputs("s SATISFIABLE\n", stdout);
       fflush(stdout);
       if (!do_not_print_model)
