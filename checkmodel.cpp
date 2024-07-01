@@ -115,8 +115,9 @@ static bool has_suffix(const char *str, const char *suffix) {
 }
 
 static FILE *read_pipe(const char *zipper, const char *path) {
-  char *tmp = (char *)malloc(strlen(zipper) + strlen(path) + 8);
-  sprintf(tmp, "%s -d -c %s", zipper, path);
+  size_t len = strlen(zipper) + strlen(path) + 8;
+  char *tmp = (char *)malloc(len);
+  snprintf(tmp, len, "%s -d -c %s", zipper, path);
   FILE *file = popen(tmp, "r");
   free(tmp);
   return file;

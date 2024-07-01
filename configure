@@ -41,6 +41,12 @@ do
   esac
   shift
 done
+if [ x"`uname`" = xDarwin ]
+then
+  needcpp11=yes
+else
+  needcpp11=unknown
+fi
 CXX=g++
 CXXFLAGS="-Wall"
 [ $check = unknown ] && check=$debug
@@ -49,6 +55,7 @@ CXXFLAGS="-Wall"
 [ $symbols = yes ] && CXXFLAGS="$CXXFLAGS -ggdb3"
 [ $debug = no ] && CXXFLAGS="$CXXFLAGS -O3"
 [ $asan = yes ] && CXXFLAGS="$CXXFLAGS -fsanitize=address"
+[ $needcpp11 = yes ] && CXXFLAGS="$CXXFLAGS -std=c++11"
 [ $logging = yes ] && CXXFLAGS="$CXXFLAGS -DLOGGING"
 [ $check = no ] && CXXFLAGS="$CXXFLAGS -DNDEBUG"
 msg "$CXX $CXXFLAGS"

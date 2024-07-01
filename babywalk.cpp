@@ -576,8 +576,9 @@ static bool has_suffix(const char *str, const char *suffix) {
 }
 
 static FILE *read_pipe(const char *zipper) {
-  char *tmp = (char *)malloc(strlen(zipper) + strlen(input_path) + 8);
-  sprintf(tmp, "%s -d -c %s", zipper, input_path);
+  size_t len = strlen(zipper) + strlen(input_path) + 8;
+  char *tmp = (char *)malloc(len);
+  snprintf(tmp, len, "%s -d -c %s", zipper, input_path);
   FILE *file = popen(tmp, "r");
   free(tmp);
   return file;
@@ -1088,7 +1089,7 @@ static void flush_buffer() {
 
 static void print_value(int lit) {
   char str[32];
-  sprintf(str, " %d", lit);
+  snprintf(str, sizeof str, " %d", lit);
   size_t l = strlen(str);
   if (buffer.size() + l > 74)
     flush_buffer();
