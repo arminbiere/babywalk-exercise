@@ -1,7 +1,7 @@
 BabyWalk Local Search SAT Solver
 --------------------------------
 
-This is a simple locals search SAT solver.
+This is a simple local search SAT solver.
 
 It has been been used as a template for a project in our SAT solving course
 and is used in our live-hacking part of our tutorial at the summer school.
