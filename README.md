@@ -3,8 +3,10 @@ BabyWalk Local Search SAT Solver
 
 This is a simple locals search SAT solver.
 
-It is used as a template for the third project in our SAT solving course.
-As before search for `TODO` and fill in that code.
+It has been been used as a template for a project in our SAT solving course
+and is used in our live-hacking part of our tutorial at the summer school.
+
+Your task is to search for `TODO` and fill in that code.
 
 If you run `configure && make test` the solver is built and regression
 tests in `test` are run.  Only trivial unsatisfiable and otherwise
