@@ -14,7 +14,7 @@ simple satisfiable instances are used.  Still your solver is expected to
 solve those small satisfiable ones.  If solved the model checker
 'checkmodel' checks the output to satisfy the formula.
 
-There is also the `generate` too which can produce some random formulas,
+There is also the `generate` tool which can produce some random formulas,
 that you can also use for testing.  The clauses are all of the same length
 and default is to produce 3-SAT formulas at the hardness threshold (with
 4.267 more clauses than variables).  With `-p` as option the tool plants
